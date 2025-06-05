@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>КвизКрафт</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-4Q6Gf2aSP4eDXB8Miphtr37CMZZQ5oXLH2yaXMJ2w8e2ZtHTl7GptT4jmndRuHDT" crossorigin="anonymous">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script src="https://unpkg.com/jspdf@latest/dist/jspdf.umd.min.js"></script>
+    <script src="./arialuni-normal.js"></script>
+</head>
+<body>
+<div class="theme-switcher">
+    <div class="theme-btn" id="themeToggle" title="Переключить тему">
+        <span id="themeIcon">🌙</span>
+    </div>
+</div>
+
+<div class="container">
+    <!-- Блок создания опроса -->
+    <div id="createPollForm" class="form">
+        <h2>Создать опрос</h2>
+        <input type="text" placeholder="Название опроса" id="pollTitleInput" class="form-control"/>
+        
+        <div class="mb-3">
+            <label for="pollTimerInput" class="form-label">Таймер опроса (минуты):</label>
+            <input type="number" id="pollTimerInput" min="1" class="form-control" placeholder="Оставьте пустым, если таймер не нужен">
+        </div>
+        
+        <h3>Добавьте первый вопрос</h3>
+        <div id="questionsContainer">
+            <div class="questionItem card p-3 mb-3">
+                <label for="question">Вопрос:</label><br/>
+                <input type="text" class="questionInput form-control"/>
+                
+                <label class="mt-2">Тип вопроса:</label>
+                <select class="questionType form-select">
+                    <option value="single">Одиночный выбор</option>
+                    <option value="multiple">Множественный выбор</option>
+                    <option value="text">Текстовый ответ</option>
+                    <option value="scale">Шкала (1-10)</option>
+                </select>
+                
+                <div class="answerOptionsContainer mt-2">
+                    <button onclick="addAnswerOption(this)" class="btn btn-primary mt-2">Добавить вариант ответа</button>
+                    <ul class="answerOptionsList list-group mt-2"></ul>
+                </div>
+            
+                <button onclick="removeQuestion(this)" class="btn btn-danger mt-2">Удалить вопрос</button>
+            </div>
+        </div>
+        <button onclick="addNewQuestion()" class="btn btn-success">Добавить новый вопрос</button>
+        <button onclick="savePoll()" class="btn btn-info">Создать опрос</button>
+    </div>
+
+    <!-- Блок отображения результата опроса -->
+    <div id="resultBlock" style="display:none;">
+        <div class="chart-container">
+            <canvas id="resultsChart"></canvas>
+        </div>
+        <p id="resultText" class="text-center"></p>
+        
+        <!-- Таблица с ответами пользователя -->
+        <div id="userAnswersTable" style="display: none;">
+            <h4 class="text-center mt-4">Ваши ответы на вопросы</h4>
+            <table class="answers-table">
+                <thead>
+                    <tr>
+                        <th>Вопрос</th>
+                        <th>Ваш ответ</th>
+                        <th>Результат</th>
+                    </tr>
+                </thead>
+                <tbody id="answersTableBody">
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="d-flex justify-content-center gap-2 mt-4">
+            <a href="#" id="copyLinkButton" onclick="copyToClipboard()" class="btn btn-primary">Скопировать ссылку на опрос</a>
+            <button id="exportPdfButton" onclick="exportToPDF()" class="btn btn-secondary">Экспорт в PDF</button>
+            <button id="showQRCodeButton" onclick="showQRCode()" class="btn btn-secondary">Показать QR-код</button>
+        </div>
+    </div>
+
+    <!-- Модальное окно для показа QR-кода -->
+    <div id="qrModal">
+        <div id="qrModalContent" class="card">
+            <span id="closeQrModal" onclick="hideQRCode()">×</span>
+            <h4>Ссылка на опрос</h4>
+            <img id="qrImage" alt="QR Code">
+            <p id="qrLinkText" style="word-break: break-all; font-size: 12px;"></p>
+        </div>
+    </div>
+
+    <!-- Форма голосования -->
+    <div id="voteForm" style="display:none;" class="form">
+        <div id="timerContainer" class="timer-container" style="display: none;">
+            <span id="timerText">Осталось времени: </span>
+            <span id="timerValue"></span>
+        </div>
+        <h2 id="pollTitle"></h2>
+        <form id="voteFormInner">
+            <ol id="voteQuestionsList"></ol>
+            <button type="submit" class="btn btn-primary">Отправить</button>
+        </form>
+    </div>
+</div>
+<script>
+let pollData = {};
+let currentPollUrl = '';
+let resultsChart = null;
+let timerInterval = null;
+let timeLeft = 0;
+let userResults = []; // Массив для хранения результатов пользователя
+
+// Уникальный ID для опроса
+const generateUUID = () => ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>c^Math.random()*16>>c/4|0).toString(16);
+
+// Улучшенная функция для формирования URL опроса
+const getPollUrl = (pollId) => {
+    let baseUrl = window.location.href;
+    baseUrl = baseUrl.split('#')[0].split('?')[0];
+    baseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    return `${baseUrl}#${pollId}`;
+};
+
+// Проверка валидности URL
+const isValidUrl = (url) => {
+    try {
+        new URL(url);
+        return true;
+    } catch (e) {
+        return false;
+    }
+};
+
+// Форматирование времени
+const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
+// Обновление таймера
+const updateTimer = () => {
+    const timerValue = document.getElementById('timerValue');
+    const timerContainer = document.getElementById('timerContainer');
+    
+    if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        timerValue.textContent = "Время вышло!";
+        timerContainer.className = "timer-container timer-ended";
+        if (document.getElementById('voteFormInner')) {
+            document.getElementById('voteFormInner').dispatchEvent(new Event('submit'));
+        }
+        return;
+    }
+    
+    timerValue.textContent = formatTime(timeLeft);
+    
+    if (timeLeft <= 30) {
+        timerContainer.className = "timer-container timer-warning";
+    } else {
+        timerContainer.className = "timer-container";
+    }
+    
+    timeLeft--;
+};
+
+// Запуск таймера
+const startTimer = (durationInMinutes) => {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+    }
+    
+    timeLeft = durationInMinutes * 60;
+    document.getElementById('timerContainer').style.display = 'block';
+    updateTimer();
+    timerInterval = setInterval(updateTimer, 1000);
+};
+
+// Добавление нового вопроса
+const addNewQuestion = () => {
+    const questionsContainer = document.getElementById('questionsContainer');
+    const newQuestionDiv = `
+        <div class="questionItem card p-3 mb-3">
+            <label for="question">Вопрос:</label><br/>
+            <input type="text" class="questionInput form-control"/>
+            
+            <label class="mt-2">Тип вопроса:</label>
+            <select class="questionType form-select">
+                <option value="single">Одиночный выбор</option>
+                <option value="multiple">Множественный выбор</option>
+                <option value="text">Текстовый ответ</option>
+                <option value="scale">Шкала (1-10)</option>
+            </select>
+            
+            <div class="answerOptionsContainer mt-2">
+                <button onclick="addAnswerOption(this)" class="btn btn-primary mt-2">Добавить вариант ответа</button>
+                <ul class="answerOptionsList list-group mt-2"></ul>
+            </div>
+        
+            <button onclick="removeQuestion(this)" class="btn btn-danger mt-2">Удалить вопрос</button>
+        </div>
+    `;
+    questionsContainer.insertAdjacentHTML('beforeend', newQuestionDiv);
+    
+    const newQuestion = questionsContainer.lastElementChild;
+    newQuestion.querySelector('.questionType').addEventListener('change', function() {
+        updateQuestionType(this);
+    });
+};
+
+// Обновление типа вопроса
+const updateQuestionType = (selectElement) => {
+    const questionItem = selectElement.closest('.questionItem');
+    const answerOptionsContainer = questionItem.querySelector('.answerOptionsContainer');
+    const answerOptionsList = questionItem.querySelector('.answerOptionsList');
+    
+    const questionType = selectElement.value;
+    answerOptionsList.innerHTML = '';
+    
+    if (questionType === 'text') {
+        answerOptionsContainer.style.display = 'none';
+    } else if (questionType === 'scale') {
+        answerOptionsContainer.style.display = 'block';
+        const scaleContainer = document.createElement('div');
+        scaleContainer.className = 'scale-options';
+        
+        for (let i = 1; i <= 10; i++) {
+            const scaleOption = document.createElement('div');
+            scaleOption.className = 'scale-option';
+            
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = `scale_${questionItem.querySelector('.questionInput').value.replace(/\W/g, '')}`;
+            radio.value = i;
+            
+            const label = document.createElement('label');
+            label.textContent = i;
+            
+            scaleOption.appendChild(radio);
+            scaleOption.appendChild(label);
+            scaleContainer.appendChild(scaleOption);
+        }
+        
+        answerOptionsList.appendChild(scaleContainer);
+    } else {
+        answerOptionsContainer.style.display = 'block';
+    }
+};
+
+// Удаление вопроса
+const removeQuestion = (btn) => {
+    btn.closest('.questionItem').remove();
+};
+
+// Добавление варианта ответа
+const addAnswerOption = (contextBtn) => {
+    const parentEl = contextBtn.closest('.questionItem');
+    const questionType = parentEl.querySelector('.questionType').value;
+    
+    if (questionType === 'scale') return;
+    
+    const li = document.createElement('li');
+    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+    
+    const answerInput = document.createElement('input');
+    answerInput.type = 'text';
+    answerInput.placeholder = 'Вариант ответа';
+    answerInput.className = 'form-control me-2';
+    answerInput.style.color = '#000000'; /* Черный текст в поле ввода */
+
+    const correctCheckbox = document.createElement('input');
+    correctCheckbox.type = 'checkbox';
+    correctCheckbox.name = 'correct';
+    correctCheckbox.className = 'me-2';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = 'Удалить';
+    removeBtn.className = 'btn btn-warning btn-sm';
+    removeBtn.onclick = function () { this.parentNode.remove(); };
+
+    li.appendChild(answerInput);
+    li.appendChild(correctCheckbox);
+    li.appendChild(removeBtn);
+
+    parentEl.querySelector('.answerOptionsList').appendChild(li);
+};
+
+// Сохранение данных опроса
+const savePoll = () => {
+    let title = document.getElementById('pollTitleInput').value.trim();
+    if (!title) return alert("Заполните поле Название опроса!");
+
+    const timerInput = document.getElementById('pollTimerInput');
+    const timerMinutes = timerInput.value ? parseInt(timerInput.value) : 0;
+
+    let questions = [];
+    Array.from(document.querySelectorAll('.questionItem')).forEach(qItem => {
+        let qText = qItem.querySelector('.questionInput').value.trim();
+        if (!qText) return alert("Заполните поле Вопрос для каждого пункта.");
+
+        const questionType = qItem.querySelector('.questionType').value;
+        let answers = [];
+        
+        if (questionType === 'text') {
+            answers.push({ value: 'Текстовый ответ', correct: false });
+        } else if (questionType === 'scale') {
+            for (let i = 1; i <= 10; i++) {
+                answers.push({ value: i.toString(), correct: false });
+            }
+        } else {
+            Array.from(qItem.querySelectorAll('.answerOptionsList > li')).forEach(optEl => {
+                let optVal = optEl.querySelector('input[type=text]')?.value.trim() || '';
+                if (optVal.length === 0) return;
+                let isCorrect = optEl.querySelector('input[name=correct]:checked') !== null;
+                answers.push({ value: optVal, correct: isCorrect });
+            });
+
+            if (answers.length === 0 && questionType !== 'text') {
+                return alert("Необходимо добавить минимум один вариант ответа для каждого вопроса.");
+            }
+        }
+
+        questions.push({
+            question: qText,
+            type: questionType,
+            answers: answers
+        });
+    });
+
+    if (questions.length === 0) return alert("Необходимо добавить минимум один вопрос.");
+
+    let uniqueID = generateUUID();
+    pollData = {
+        uuid: uniqueID,
+        title: title,
+        timerMinutes: timerMinutes,
+        questions: questions
+    };
+
+    localStorage.setItem(uniqueID, JSON.stringify(pollData));
+    currentPollUrl = getPollUrl(uniqueID);
+    
+    if (!isValidUrl(currentPollUrl)) {
+        console.error('Некорректный URL опроса:', currentPollUrl);
+        return;
+    }
+    
+    window.location.hash = '#' + uniqueID;
+    showVoteForm(pollData);
+};
+
+// Загрузка сохранённого опроса по ссылке
+const loadPollFromURL = () => {
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+        const storedPoll = localStorage.getItem(hash);
+        if (storedPoll) {
+            pollData = JSON.parse(storedPoll);
+            currentPollUrl = getPollUrl(hash);
+            if (document.getElementById('resultBlock').style.display !== 'block') {
+                showVoteForm(pollData);
+            }
+        } else {
+            document.getElementById('createPollForm').style.display = 'block';
+            document.getElementById('voteForm').style.display = 'none';
+            document.getElementById('resultBlock').style.display = 'none';
+        }
+    }
+};
+
+// Отображение формы голосования
+const showVoteForm = (data) => {
+    document.getElementById('createPollForm').style.display = 'none';
+    document.getElementById('voteForm').style.display = 'block';
+    document.getElementById('resultBlock').style.display = 'none';
+
+    document.getElementById('pollTitle').innerHTML = data.title;
+
+    if (data.timerMinutes && data.timerMinutes > 0) {
+        startTimer(data.timerMinutes);
+    }
+
+    const voteQuestionsList = document.getElementById('voteQuestionsList');
+    voteQuestionsList.innerHTML = '';
+
+    data.questions.forEach((questionObj, qIndex) => {
+        const olItem = document.createElement('li');
+        olItem.className = 'mb-4';
+        olItem.innerHTML = `<strong>${questionObj.question}</strong>`;
+
+        const questionDiv = document.createElement('div');
+        questionDiv.className = 'question-container mt-2';
+        
+        if (questionObj.type === 'text') {
+            const textarea = document.createElement('textarea');
+            textarea.name = `q${qIndex}`;
+            textarea.placeholder = 'Введите ваш ответ...';
+            textarea.className = 'form-control';
+            questionDiv.appendChild(textarea);
+        } else if (questionObj.type === 'scale') {
+            const scaleContainer = document.createElement('div');
+            scaleContainer.className = 'scale-options';
+            
+            for (let i = 1; i <= 10; i++) {
+                const scaleOption = document.createElement('div');
+                scaleOption.className = 'scale-option';
+                
+                const radio = document.createElement('input');
+                radio.type = 'radio';
+                radio.name = `q${qIndex}`;
+                radio.value = i;
+                radio.id = `q${qIndex}_opt${i}`;
+                radio.className = 'form-check-input';
+                
+                const label = document.createElement('label');
+                label.textContent = i;
+                label.htmlFor = `q${qIndex}_opt${i}`;
+                label.className = 'form-check-label';
+                
+                scaleOption.appendChild(radio);
+                scaleOption.appendChild(label);
+                scaleContainer.appendChild(scaleOption);
+            }
+            
+            questionDiv.appendChild(scaleContainer);
+        } else {
+            const ulAnswers = document.createElement('ul');
+            ulAnswers.className = 'answer-options list-group';
+            
+            questionObj.answers.forEach((ans, aIndex) => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                
+                const div = document.createElement('div');
+                div.className = 'form-check';
+                
+                const input = document.createElement('input');
+                input.type = questionObj.type === 'single' ? 'radio' : 'checkbox';
+                input.name = `q${qIndex}`;
+                input.value = ans.value;
+                input.id = `q${qIndex}_opt${aIndex}`;
+                input.className = 'form-check-input';
+                
+                const label = document.createElement('label');
+                label.textContent = ans.value;
+                label.htmlFor = `q${qIndex}_opt${aIndex}`;
+                label.className = 'form-check-label';
+                
+                div.appendChild(input);
+                div.appendChild(label);
+                li.appendChild(div);
+                ulAnswers.appendChild(li);
+            });
+            
+            questionDiv.appendChild(ulAnswers);
+        }
+        
+        olItem.appendChild(questionDiv);
+        voteQuestionsList.appendChild(olItem);
+    });
+
+    document.getElementById('voteFormInner').onsubmit = handleSubmit;
+};
+
+// Обработка отправки голосов
+const handleSubmit = e => {
+    e.preventDefault();
+
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+
+    let totalCorrect = 0;
+    let totalIncorrect = 0;
+    let totalQuestions = 0;
+    userResults = [];
+    
+    pollData.questions.forEach((q, qIndex) => {
+        if (q.type === 'text') {
+            const textAnswer = document.querySelector(`textarea[name=q${qIndex}]`).value.trim();
+            if (!textAnswer) return alert("Пожалуйста, заполните все вопросы!");
+            
+            totalIncorrect++;
+            totalQuestions++;
+            
+            userResults.push({
+                question: q.question,
+                answer: textAnswer,
+                type: q.type,
+                correct: false
+            });
+        } else {
+            const inputs = [...document.querySelectorAll(`input[name=q${qIndex}]:checked`)];
+            if (inputs.length === 0 && q.type !== 'scale') {
+                return alert("Пожалуйста, ответьте на все вопросы!");
+            }
+            
+            const userSelections = inputs.map(input => input.value);
+            let correctAnswers = q.answers.filter(a => a.correct).map(a => a.value);
+            let isCorrect = false;
+            
+            if (q.type === 'single' || q.type === 'multiple') {
+                const userCorrect = userSelections.filter(val => 
+                    q.answers.find(a => a.value === val && a.correct)
+                ).length;
+                
+                const requiredCorrect = correctAnswers.length;
+                
+                if (q.type === 'single') {
+                    isCorrect = userCorrect === 1 && requiredCorrect === 1 && 
+                               userSelections[0] === correctAnswers[0];
+                } else {
+                    isCorrect = userCorrect === requiredCorrect && 
+                               userSelections.length === correctAnswers.length;
+                }
+            } else if (q.type === 'scale') {
+                isCorrect = true;
+            }
+            
+            if (isCorrect) {
+                totalCorrect++;
+            } else {
+                totalIncorrect++;
+            }
+            totalQuestions++;
+            
+            userResults.push({
+                question: q.question,
+                selections: userSelections,
+                type: q.type,
+                correct: isCorrect
+            });
+        }
+    });
+
+    showResults(totalCorrect, totalIncorrect, totalQuestions);
+};
+
+// Показать результаты с круговой диаграммой
+const showResults = (correct, incorrect, total) => {
+    document.getElementById('voteForm').style.display = 'none';
+    document.getElementById('resultBlock').style.display = 'block';
+    
+    const percentage = Math.round((correct / total) * 100);
+    document.getElementById('resultText').innerHTML = `
+        <h4>Результаты опроса</h4>
+        <p>Вы ответили правильно на ${correct} из ${total} вопросов</p>
+        <p>Процент правильных ответов: ${percentage}%</p>
+    `;
+    
+    const ctx = document.getElementById('resultsChart').getContext('2d');
+    
+    if (resultsChart) {
+        resultsChart.destroy();
+    }
+    
+    resultsChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: ['Правильные ответы', 'Неправильные ответы'],
+            datasets: [{
+                data: [correct, incorrect],
+                backgroundColor: ['#4CAF50', '#F44336'],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const label = context.label || '';
+                            const value = context.raw || 0;
+                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = Math.round((value / total) * 100);
+                            return `${label}: ${value} (${percentage}%)`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    showUserAnswersTable();
+};
+
+// Показать таблицу с ответами пользователя
+const showUserAnswersTable = () => {
+    const tableBody = document.getElementById('answersTableBody');
+    tableBody.innerHTML = '';
+    
+    userResults.forEach((result, index) => {
+        const row = document.createElement('tr');
+        
+        // Вопрос
+        const questionCell = document.createElement('td');
+        questionCell.textContent = result.question;
+        row.appendChild(questionCell);
+        
+        // Ответ пользователя
+        const answerCell = document.createElement('td');
+        if (result.type === 'text') {
+            answerCell.textContent = result.answer;
+        } else {
+            answerCell.textContent = result.selections.join(', ');
+        }
+        row.appendChild(answerCell);
+        
+        // Результат
+        const resultCell = document.createElement('td');
+        if (result.correct) {
+            resultCell.textContent = '✓ Правильно';
+            resultCell.className = 'correct-answer';
+        } else {
+            resultCell.textContent = '✗ Неправильно';
+            resultCell.className = 'incorrect-answer';
+        }
+        row.appendChild(resultCell);
+        
+        tableBody.appendChild(row);
+    });
+    
+    document.getElementById('userAnswersTable').style.display = 'block';
+};
+
+// Копирование ссылки на опрос
+const copyToClipboard = () => {
+    if (!currentPollUrl) {
+        alert('Сначала создайте опрос!');
+        return;
+    }
+    navigator.clipboard.writeText(currentPollUrl).then(() => {
+        alert('Ссылка успешно скопирована: ' + currentPollUrl);
+    }).catch(err => console.error('Ошибка копирования:', err));
+};
+
+// Экспорт опроса в PDF
+const exportToPDF = () => {
+    try {
+        window.jsPDF = window.jspdf.jsPDF;
+        const doc = new jsPDF();
+        doc.setFont('arialuni');
+        doc.setFontSize(16);
+
+        doc.text(pollData.title, 10, 10);
+
+        let yPosition = 20;
+        
+        if (pollData.timerMinutes && pollData.timerMinutes > 0) {
+            doc.setFontSize(12);
+            doc.text(`Таймер опроса: ${pollData.timerMinutes} минут`, 10, yPosition);
+            yPosition += 10;
+        }
+        
+        pollData.questions.forEach((question, index) => {
+            doc.setFontSize(14);
+            doc.text(`Вопрос №${index+1}: ${question.question} (${getQuestionTypeName(question.type)})`, 10, yPosition);
+            yPosition += 10;
+
+            if (question.type !== 'text') {
+                question.answers.forEach((answer, answerIndex) => {
+                    doc.setFontSize(12);
+                    doc.text(`   Вариант ${answerIndex+1}: ${answer.value}`, 10, yPosition);
+                    yPosition += 10;
+                });
+            } else {
+                doc.setFontSize(12);
+                doc.text(`   Текстовый ответ`, 10, yPosition);
+                yPosition += 10;
+            }
+
+            yPosition += 10;
+        });
+
+        doc.save(`${pollData.title}_опрос.pdf`);
+    } catch (err) {
+        alert('Ошибка экспорта в PDF: ' + err.message);
+    }
+};
+
+// Получение названия типа вопроса
+const getQuestionTypeName = (type) => {
+    switch(type) {
+        case 'single': return 'Одиночный выбор';
+        case 'multiple': return 'Множественный выбор';
+        case 'text': return 'Текстовый ответ';
+        case 'scale': return 'Шкала (1-10)';
+        default: return type;
+    }
+};
+
+// Показ QR-кода
+const showQRCode = () => {
+    if (!currentPollUrl) {
+        alert('Сначала создайте опрос!');
+        return;
+    }
+    
+    if (!isValidUrl(currentPollUrl)) {
+        alert('Некорректная ссылка на опрос!');
+        return;
+    }
+    
+    try {
+        const typeNumber = 0;
+        const errorCorrectionLevel = 'L';
+        const qr = qrcode(typeNumber, errorCorrectionLevel);
+        
+        qr.addData(currentPollUrl);
+        qr.make();
+        
+        const qrImageUrl = qr.createDataURL(4, 0);
+        
+        document.getElementById('qrImage').src = qrImageUrl;
+        document.getElementById('qrLinkText').textContent = currentPollUrl;
+        document.getElementById('qrModal').style.display = 'block';
+        
+        console.log('QR-код успешно создан для URL:', currentPollUrl);
+    } catch (e) {
+        console.error('Ошибка при создании QR-кода:', e);
+        alert('Ошибка при создании QR-кода: ' + e.message);
+    }
+};
+
+// Скрыть QR-код
+const hideQRCode = () => {
+    document.getElementById('qrModal').style.display = 'none';
+};
+
+// Переключение темы
+const toggleTheme = () => {
+    const body = document.body;
+    const themeIcon = document.getElementById('themeIcon');
+    
+    if (body.classList.contains('dark-theme')) {
+        body.classList.remove('dark-theme');
+        themeIcon.textContent = '🌙';
+        localStorage.setItem('theme', 'light');
+    } else {
+        body.classList.add('dark-theme');
+        themeIcon.textContent = '☀️';
+        localStorage.setItem('theme', 'dark');
+    }
+};
+
+// Инициализация темы при загрузке
+const initTheme = () => {
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    const body = document.body;
+    const themeIcon = document.getElementById('themeIcon');
+    
+    if (savedTheme === 'dark') {
+        body.classList.add('dark-theme');
+        themeIcon.textContent = '☀️';
+    } else {
+        body.classList.remove('dark-theme');
+        themeIcon.textContent = '🌙';
+    }
+};
+
+// Инициализация при загрузке страницы
+document.addEventListener('DOMContentLoaded', () => {
+    initTheme();
+    loadPollFromURL();
+    
+    document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+    window.addEventListener('hashchange', loadPollFromURL);
+    
+    document.querySelectorAll('.questionType').forEach(select => {
+        select.addEventListener('change', function() {
+            updateQuestionType(this);
+        });
+    });
+});
+</script>
+</body>
+</html>
